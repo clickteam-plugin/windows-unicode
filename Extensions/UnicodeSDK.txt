@@ -1,0 +1,274 @@
+
+
+How to convert an extension to Unicode
+--------------------------------------
+
+The Unicode version of MMF2 can load either Unicode or non Unicode extensions, but of course 
+Unicode characters are supported only by Unicode extensions, so if your extensions use text 
+you should create a Unicode version.
+
+The MMF2 Unicode SDK allows you to compile extensions for both the non Unicode version of MMF2 
+and for the Unicode version.
+
+
+How this works
+--------------
+To compile a Unicode extension, you have to add _UNICODE and UNICODE to the preprocessor 
+definitions in your project's settings.
+
+If you don't define these symbols, the extension will be compiled in non Unicode mode.
+
+So first thing to do, copy the extension folder to the MMF2SDK_Unicode/Extensions folder, and then :
+
+- edit its project, 
+
+- add new Debug Unicode, Release Unicode and Runtime Unicode configurations based on the Debug, 
+Release and Runtime configurations (and a Vitalize Unicode config if your extension is "Vitalized")
+
+- and add _UNICODE and UNICODE to the proprocessor definitions of those configs. The original
+configs will be used to compile a non Unicode version for the normal version of MMF2.
+
+Note: the Unicode extensions have to be installed to the Extensions\Unicode and Data\Runtime\Unicode 
+folders of MMF2 Unicode.
+
+
+What do the _UNICODE/UNICODE symbols do
+---------------------------------------
+All the Windows structures and functions that use text, as well as all the MMF structures, exist 
+in 2 versions, a non Unicode version and a Unicode version. When _UNICODE/UNICODE are defined, 
+the Unicode version is used, when they are not defined then the non Unicode version is used.
+
+For example the Windows DrawText function doesn't exist really, Windows contains 2 functions 
+DrawTextA and DrawTextW and DrawText is a macro set to DrawTextW if _UNICODE/UNICODE are defined, 
+and to DrawTextA if they are not defined.
+
+Structures like LOGFONT are also macros, the real structures are LOGFONTA and LOGFONTW.
+
+Those functions and structures don't use the 'char' or 'char*' types, they also use macros, 
+you have to use them in your extension to be able to compile it to both Unicode and non Unicode :
+
+Instead of ... use ... :
+
+char -> TCHAR
+LPSTR -> LPTSTR
+LPCSTR -> LPCTSTR
+
+Note: you can still use char for characters that are always non Unicode, or WCHAR for charaters 
+that are always Unicode.
+
+Functions from the C++ runtime library also have to be replaced by macros (defined in tchar.h) :
+
+strlen -> _tcslen
+strcpy -> _tcscpy
+splitpath -> _tsplitpath
+etc.
+
+For constant strings, use the _T macro:
+
+"this is a string" -> _T("This is a string")
+
+If your extensions is compiled in Unicode mode, then _T("This is a string") will be replaced 
+by L"this is a string", otherwise it will be replaced by "this is a string".
+
+
+-----------------
+Changes in Main.h
+-----------------
+
+
+EDITDATA
+--------
+That's the most problematic part of the conversion.
+
+If it doesn't contain any text, there is nothing to do.
+
+If it contains text, you have to keep 2 versions of this structure :
+
+- an EDITDATAA structure, non-Unicode, with char values (for example char array[2], LOGFONTA lfnt, etc)
+- an EDITDATAW structure, Unicode, with WCHAR values (for example WCHAR array[2], LOGFONTW lfnt, etc)
+
+and then define this :
+
+#ifdef _UNICODE
+#define EDITDATA	EDITDATAW
+#define LPEDATA		LPEDATAW
+#else
+#define EDITDATA	EDITDATAA
+#define LPEDATA		LPEDATAA
+#endif
+
+Do NOT use TCHAR in EDITDATA.
+
+You also have to convert your EDITDATA structure to/from Unicode in the UpdateEditStructure 
+function, in General.cpp :
+
+If you don't use the UpdateEditStructure function in your application already, you have to implement 
+it so that it can convert non Unicode EDITDATA from non Unicode applications to Unicode.
+
+You can check if the application file that is being loaded is Unicode with mvIsUnicodeApp(pMV, pMV->mvEditApp).
+If you need to convert text from/to Unicode, use the MultiByteToWideChar and WideCharToMultiByte functions,
+and use mvGetAppCodePage(pMV, pMV->mvEditApp) as code page.
+
+Look at the Simple Control example to see how to implement this. 
+And don't forgot to enable this function in the .DEF file!
+
+If you already use UpdateEditStructure to update the EDITDATA structure of old versions 
+of your object, then it's a little more complicated, you should first update the old 
+EDITDATAA structure and then convert the updated EDITDATAA structure to Unicode.
+
+
+
+RUNDATA
+-------
+Almost nothing to do in this structure : just use TCHAR, LPTSTR, etc.
+
+
+
+-------------------------------
+Changes in various source codes
+-------------------------------
+
+
+EditTime.cpp
+------------
+
+Replace LPSTR (or LPCSTR) by LPTSTR (or LPCTSTR) in the headers of the following functions :
+
+GetObjInfos
+GetHelpFileName
+MakeIconEx
+UsesFile
+CreateFromFile
+GetTextFont
+GetCodeTitle
+GetConditionTitle
+GetActionTitle
+GetExpressionTitle
+GetConditionString
+GetActionString
+GetExpressionString
+GetExpressionParam
+GetParameterString
+
+And replace the menucpy function by :
+
+void menucpy(HMENU hTargetMenu, HMENU hSourceMenu)
+{
+#ifndef RUN_ONLY
+	int			n, id, nMn;
+	LPTSTR		strBuf;
+	HMENU		hSubMenu;
+	
+	nMn = GetMenuItemCount(hSourceMenu);
+	strBuf = (LPTSTR)calloc(80, sizeof(TCHAR));
+	for (n = 0; n < nMn; n++)
+	{
+		if (0 == (id = GetMenuItemID(hSourceMenu, n)))
+			AppendMenu(hTargetMenu, MF_SEPARATOR, 0, 0L);
+		else
+		{
+			GetMenuString(hSourceMenu, n, strBuf, 80, MF_BYPOSITION);
+			if (id != -1)
+				AppendMenu(hTargetMenu, GetMenuState(hSourceMenu, n, MF_BYPOSITION), id, strBuf);
+			else
+			{
+				hSubMenu = CreatePopupMenu();
+				AppendMenu(hTargetMenu, MF_POPUP | MF_STRING, (uint)hSubMenu, strBuf);
+				menucpy(hSubMenu, GetSubMenu(hSourceMenu, n));
+			}
+		}
+	}
+	free(strBuf);
+#endif
+}
+
+
+Properties
+----------
+There are no changes in the properties, except in string properties. You were using 
+previously CPropDataValue to pass/retrieve strings to/from the MMF property manager.
+There is now a new CPropStringValue class :
+
+In the GetPropValue function :
+
+Before :
+	case PROPID_MYSTRING:
+		return new CPropDataValue((LPCSTR)edPtr->myString);
+
+Now:
+	case PROPID_MYSTRING:
+		return new CPropStringValue(edPtr->myString);
+
+
+In the SetPropValue function :
+
+Before:
+	case PROPID_MYSTRING:
+		LPSTR ps = (LPSTR)((CPropDataValue*)pValue)->m_pData;
+
+Now:
+	case PROPID_MYSTRING:
+		LPCTSTR ps = ((CPropStringValue*)pValue)->GetString();
+
+
+
+Runtime.cpp
+-----------
+
+Replace the header of the GetDebugItem function by :
+
+void WINAPI DLLExport GetDebugItem(LPTSTR pBuffer, LPRDATA rdPtr, int id)
+
+
+
+General.cpp
+-----------
+
+Add this in the GetInfos function :
+
+			case KGI_UNICODE:
+				#ifdef _UNICODE
+					return TRUE;
+				#else
+					return FALSE;
+				#endif
+
+This will allow MMF to know if your extension is a Unicode extension or a non-Unicode 
+extension. MMF will then convert the strings if necessary before passing them to the 
+functions of your extension, or after retrieving them.
+
+
+Replace LPCSTR by LPCTSTR in GetDependencies() and in the table it returns if any 
+(and add _T() in the dll names in the table).
+
+
+Replace LPSTR by LPTSTR in the header of the UpdateFileNames function.
+
+Implement the UpdateEditStructure if necessary, see above.
+
+
+Main.cpp
+--------
+Actions/Conditions/Expressions: if your extension is a Unicode extension, it will receive 
+string parameters in Unicode format (and will have to return string parameters in Unicode 
+format). If your extension is not a Unicode extension, it will receive/return non Unicode 
+strings.
+
+Note: the size parameter in the RFUNCTION_GETSTRINGSPACE and RFUNCTION_GETSTRINGSPACE_EX 
+functions is in bytes. Multiply the string length by sizeof(TCHAR) to get its size in bytes.
+
+
+---------------------------------
+Changes in the runtime structures
+---------------------------------
+No many changes in the internal runtime structure, but anyway if you compile a Unicode 
+version of your extension you haven't to care about those changes : the non Unicode
+version of your extension will work fine when it will be executed by the non Unicode
+version of MMF2 and the Unicode version of your extension will work fine when it will
+be executed by the Unicode version of MMF2.
+
+Problems happens when a non Unicode version of an extension is loaded by MMF2 Unicode
+and want to access members of internal structures that are different in the Unicode version,
+for example if a non Unicode extension needs to copy the oilName member of objInfoList and
+is executed by MMF2 Unicode.
+
